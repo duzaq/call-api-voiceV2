@@ -20,7 +20,7 @@ services:
       retries: 3
 
   opensips:
-    image: opensips/opensips:3.3
+    image: opensips/opensips:latest
     ports:
       - "5060:5060/udp"
     volumes:
@@ -29,7 +29,6 @@ services:
     depends_on:
       - app
       - rtpengine
-    entrypoint: /bin/sh -c "apk update && apk add opensips-modules && opensips -f /usr/local/etc/opensips/opensips.cfg"
     command: opensips -f /usr/local/etc/opensips/opensips.cfg
     networks:
       - internal-network

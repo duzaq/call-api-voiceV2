@@ -29,6 +29,7 @@ services:
     depends_on:
       - app
       - rtpengine
+    entrypoint: /bin/sh -c "apk update && apk add opensips-modules && opensips -f /usr/local/etc/opensips/opensips.cfg"
     command: opensips -f /usr/local/etc/opensips/opensips.cfg
     networks:
       - internal-network

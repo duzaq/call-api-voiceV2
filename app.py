@@ -1,11 +1,11 @@
-
 import asyncio
 import os
 import logging
-import tempfile
+import uuid
 
 import aiohttp
 from flask import Flask, request, jsonify
+from deepgram import Deepgram
 from gtts import gTTS
 from dotenv import load_dotenv
 import openai
@@ -19,35 +19,22 @@ load_dotenv()
 app = Flask(__name__)
 
 # Carregar chaves de API
+DEEPGRAM_API_KEY = os.getenv('DEEPGRAM_API_KEY')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
+OPENAI_MAX_TOKENS = int(os.getenv('OPENAI_MAX_TOKENS', 150))
 
-# Função auxiliar para transcrição de áudio com OpenAI Whisper
-async def _transcribe_audio_openai(audio_url):
+# Função auxiliar para transcrição de áudio com Deepgram
+async def _transcribe_audio_deepgram(audio_url):
     try:
-        async with aiohttp.ClientSession() as session:
-            # Baixar o arquivo de áudio
-            async with session.get(audio_url) as response:
-                response.raise_for_status()  # Lançar exceção para erros HTTP
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_audio_file:
-                    temp_audio_file.write(await response.read())
-                    temp_audio_file_path = temp_audio_file.name
-
-            # Transcrever o áudio com Whisper
-            with open(temp_audio_file_path, 'rb') as audio_file:
-                openai.aiosession.set(session)
-                transcript = await openai.Audio.atranscribe("whisper-1", audio_file)
-
-            # Remover o arquivo temporário
-            os.remove(temp_audio_file_path)
-
-            logging.info(f"Transcrição OpenAI (Whisper): {transcript.text}")
-            return transcript.text
-
-    except aiohttp.ClientError as e:
-        logging.error(f"Erro ao baixar o áudio: {e}")
-        raise
+        deepgram = Deepgram(DEEPGRAM_API_KEY)
+        source = {'url': audio_url}
+        response = await deepgram.transcription.prerecorded(source, {'punctuate': True})
+        transcript = response['results']['channels'][0]['alternatives'][0]['transcript']
+        logging.info(f"Transcrição Deepgram: {transcript}")
+        return transcript
     except Exception as e:
-        logging.error(f"Erro na transcrição OpenAI (Whisper): {e}")
+        logging.error(f"Erro na transcrição Deepgram: {e}")
         raise
 
 # Função auxiliar para geração de resposta com OpenAI (agora assíncrona)
@@ -57,12 +44,12 @@ async def _generate_response_openai(prompt):
             openai.aiosession.set(session)
             response = await openai.ChatCompletion.acreate(
                 api_key=OPENAI_API_KEY,
-                model="gpt-3.5-turbo",
+                model=OPENAI_MODEL,
                 messages=[
                     {"role": "system", "content": "Você é um assistente útil."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=150
+                max_tokens=OPENAI_MAX_TOKENS
             )
             answer = response['choices'][0]['message']['content'].strip()
             logging.info(f"Resposta OpenAI: {answer}")
@@ -76,9 +63,11 @@ async def _text_to_speech_gtts(text, output_file='output.mp3'):
     def _save_audio():
         try:
             tts = gTTS(text=text, lang='pt')
-            tts.save(output_file)
-            logging.info(f"Áudio salvo em: {output_file}")
-            return output_file
+            # Usar um caminho relativo para salvar no diretório montado 'audio'
+            save_path = os.path.join("audio", output_file)
+            tts.save(save_path)
+            logging.info(f"Áudio salvo em: {save_path}")
+            return output_file  # Retornar apenas o nome do arquivo
         except Exception as e:
             logging.error(f"Erro na conversão de texto para áudio com gTTS: {e}")
             raise
@@ -87,14 +76,34 @@ async def _text_to_speech_gtts(text, output_file='output.mp3'):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _save_audio)
 
-# Função para roteamento de chamada
-def route_call(caller, callee):
-    if callee == "suporte":
-        return "Você será conectado ao suporte técnico."
-    elif callee == "vendas":
-        return "Você será conectado ao departamento de vendas."
-    else:
-        return "Desculpe, não reconhecemos o número discado."
+# Função para roteamento de chamada (agora assíncrona e com tratamento de erros)
+async def route_call(caller, callee):
+    """
+    Roteia a chamada com base no chamador e no destinatário.
+
+    Args:
+        caller: O número ou ID do chamador.
+        callee: O número ou ID do destinatário.
+
+    Returns:
+        Uma string indicando o resultado do roteamento ou um código de erro.
+    Raises:
+        RouteCallException: Se houver um erro no roteamento da chamada.
+    """
+    try:
+        if callee == "suporte":
+            return "SUPP" # Exemplo de código de retorno
+        elif callee == "vendas":
+            return "VEND" # Exemplo de código de retorno
+        else:
+            raise RouteCallException(f"Destinatário desconhecido: {callee}")
+    except Exception as e:
+        logging.error(f"Erro ao rotear chamada de {caller} para {callee}: {e}")
+        raise RouteCallException(f"Erro interno ao rotear chamada: {e}")
+
+class RouteCallException(Exception):
+    """Exceção para erros de roteamento de chamada."""
+    pass
 
 # Endpoint principal para lidar com chamadas SIP
 @app.route('/sip/call', methods=['POST'])
@@ -105,37 +114,48 @@ async def handle_call():
     caller = data.get('caller')
     callee = data.get('callee')
     audio_url = data.get('audio_url')
+    call_id = data.get('call_id', str(uuid.uuid4())) # Adiciona um ID de chamada
 
     if not all([caller, callee, audio_url]):
         return jsonify({"error": "Campos 'caller', 'callee' e 'audio_url' são obrigatórios."}), 400
     if not audio_url.startswith(('http://', 'https://')):
         return jsonify({"error": "O 'audio_url' deve ser um URL válido."}), 400
 
-    logging.info(f"Chamada recebida de {caller} para {callee}, áudio: {audio_url}")
+    logging.info(f"Chamada recebida de {caller} para {callee}, áudio: {audio_url}, Call-ID: {call_id}")
 
     try:
-        # Transcrever áudio usando Whisper
-        transcription = await _transcribe_audio_openai(audio_url)
+        # Transcrever áudio
+        transcription = await _transcribe_audio_deepgram(audio_url)
+
+        # Roteamento de Chamada
+        try:
+            routing_response = await route_call(caller, callee)
+        except RouteCallException as e:
+            return jsonify({"error": str(e)}), 400
 
         # Gerar resposta
         response_text = await _generate_response_openai(transcription)
 
         # Converter resposta em áudio
-        audio_file = await _text_to_speech_gtts(response_text)
+        # Gera um nome de arquivo único para o áudio de resposta
+        unique_id = str(uuid.uuid4())
+        response_audio_filename = f"response-{unique_id}.mp3"
 
-        # Roteamento de chamada
-        routing_response = route_call(caller, callee)
+        # audio_file agora é apenas o nome do arquivo
+        audio_file = await _text_to_speech_gtts(response_text, response_audio_filename)
 
-        # Retornar resposta
+        # Modificar o retorno para incluir o URL do áudio de resposta
         return jsonify({
             "status": "processed",
+            "call_id": call_id,
             "transcription": transcription,
             "response": response_text,
-            "audio_file": audio_file,
+            "audio_file": f"http://nginx/audio/{audio_file}",
             "routing_response": routing_response
         })
 
     except Exception as e:
+        logging.error(f"Erro no processamento da chamada {call_id}: {e}")
         return jsonify({"error": "Erro no processamento da chamada.", "detail": str(e)}), 500
 
 if __name__ == '__main__':

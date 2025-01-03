@@ -21,8 +21,14 @@ async def transcribe_audio(audio_url):
         source = {'url': audio_url}
         print(f"Transcrevendo áudio da URL: {audio_url}")  # Log para depuração
         response = await deepgram.transcription.prerecorded(source, {'punctuate': True})
-        print(f"Resposta da Deepgram: {response}")  # Log para depuração
-        return response['results']['channels'][0]['alternatives'][0]['transcript']
+        print(f"Resposta completa da Deepgram: {response}")  # Log para depuração
+        if 'results' in response and 'channels' in response['results']:
+            transcription = response['results']['channels'][0]['alternatives'][0]['transcript']
+            print(f"Transcrição: {transcription}")  # Log para depuração
+            return transcription
+        else:
+            print("Resposta da Deepgram não contém dados de transcrição.")
+            return ""
     except Exception as e:
         print(f"Erro ao transcrever áudio: {e}")  # Log para depuração
         return ""

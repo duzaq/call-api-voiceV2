@@ -4,9 +4,77 @@ services:
   app:
     build: .
     ports:
-      - "5060:5060"
+      - "5061:5060"
     volumes:
       - .:/app
+      - ./audio:/app/audio
     env_file:
       - .env
     command: python app.py
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5060/sip/call"] # Ajustar para um endpoint de healthcheck real
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  opensips:
+    image: opensips/opensips:3.3
+    ports:
+      - "5060:5060/udp"
+    volumes:
+      - ./cfg:/usr/local/etc/opensips
+      - ./audio:/var/www/html/audio
+    depends_on:
+      - app
+      - rtpengine
+    command: opensips -f /usr/local/etc/opensips/opensips.cfg
+    networks:
+      - internal-network
+    healthcheck:
+      test: ["CMD", "opensipsctl", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  nginx:
+    image: nginx:latest
+    ports:
+      - "8081:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf
+      - ./audio:/var/www/html/audio
+    depends_on:
+      - app
+    networks:
+      - internal-network
+      - app-network
+    environment:
+      - SERVER_NAME=your_domain.com # Exemplo de variável de ambiente
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  rtpengine:
+    image: drachtio/rtpengine:latest
+    ports:
+      - "12122:12122/udp" # Exemplo de porta, ajuste conforme necessário
+    volumes:
+      - ./rtpengine:/etc/rtpengine
+    networks:
+      - internal-network
+    healthcheck:
+      test: ["CMD", "rtpengine", "--test"] # Comando de teste fictício, ajuste conforme necessário
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# Rede para comunicação interna entre os contêineres
+networks:
+  internal-network:
+    driver: bridge
+  app-network:
+    driver: bridge

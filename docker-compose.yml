@@ -4,7 +4,7 @@ services:
   app:
     build: .
     ports:
-      - "5061:5060"
+      - "5062:5060"
     volumes:
       - .:/app
       - ./audio:/app/audio
